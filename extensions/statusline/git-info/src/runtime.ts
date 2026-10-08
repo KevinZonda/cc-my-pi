@@ -1,11 +1,11 @@
-import { NodeServices } from "@effect/platform-node";
+import { layer as nodeServicesLayer } from "@effect/platform-node/NodeServices";
 import { Cause, Exit, Layer, ManagedRuntime, type Effect } from "effect";
 import { CommandRunner, CommandRunnerLive } from "./process.ts";
 
 // Effect's beta platform types leave ChildProcessSpawner in the inferred
-// environment even though NodeServices.layer provides it at runtime.
+// environment even though nodeServicesLayer provides it at runtime.
 const AppLayer = CommandRunnerLive.pipe(
-  Layer.provide(NodeServices.layer),
+  Layer.provide(nodeServicesLayer),
 ) as Layer.Layer<CommandRunner>;
 
 export function createRuntime() {

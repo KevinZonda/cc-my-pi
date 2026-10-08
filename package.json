@@ -69,10 +69,12 @@
     "test": "node --test --experimental-strip-types extensions/pi-tasks/task-chat.test.ts extensions/task-and-tool-presentation.test.ts extensions/user-message.test.ts extensions/image-paster.test.ts extensions/spinner.test.ts extensions/esc-features.test.ts extensions/setup-wizard.test.ts extensions/companion-packages.test.ts extensions/copy-command.test.ts extensions/queue-steer/queue-state.test.ts extensions/queue-steer/editor-render.test.ts extensions/queue-steer/command-rows.test.ts extensions/claude-header/claude-header.test.ts extensions/claude-header/pi-mascot.test.ts extensions/claude-header/loaded-stats.test.ts extensions/pi-agent-settings.test.ts extensions/statusline/git-info/process.test.ts extensions/statusline/git-info/git-segment.test.ts extensions/statusline/git-info/refresh-coordinator.test.ts extensions/bash-execution-render.test.ts extensions/update-check.test.ts extensions/pi-v084-compat.test.ts extensions/statusline/model-info/model-info.test.ts",
     "pack:dry-run": "npm pack --dry-run",
     "publish:dry-run": "npm publish --dry-run",
-    "bench:tools": "bun scripts/benchmark-tools.ts"
+    "bench:tools": "bun scripts/benchmark-tools.ts",
+    "test:install": "node --test scripts/install.test.mjs"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0-beta.98",
+    "@effect/platform-node-shared": "4.0.0-beta.98",
     "@shikijs/cli": "^4.0.2",
     "diff": "^9.0.0",
     "effect": "4.0.0-beta.98",

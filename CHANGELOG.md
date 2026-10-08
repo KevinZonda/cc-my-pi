@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pi startup after installation** — import only the Effect Node services used by the git statusline, avoiding an unused Redis peer dependency, and pin the shared Node platform package to the same Effect beta version. Add a clean packed-package installation check using Pi's `--legacy-peer-deps` mode.
+
 ## [1.4.1] - 2026-08-10
 
 ### Fixed
