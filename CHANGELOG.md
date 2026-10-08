@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- **Host-provided TypeBox** — declare `typebox` as a wildcard peer dependency and keep it only as a development dependency, satisfying Pi's extension validation and avoiding a duplicate runtime module.
+
 - **Pi startup after installation** — import only the Effect Node services used by the git statusline, avoiding an unused Redis peer dependency, and pin the shared Node platform package to the same Effect beta version. Add a clean packed-package installation check using Pi's `--legacy-peer-deps` mode.
 
 ## [1.4.1] - 2026-08-10

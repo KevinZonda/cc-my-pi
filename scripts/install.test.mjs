@@ -15,12 +15,18 @@ test("packed extension runs git commands after Pi-style installation without pee
   });
   try {
     const [packed] = JSON.parse(npm(["pack", "--json", "--pack-destination", fixture], projectDir));
+    const manifest = JSON.parse(readFileSync(join(projectDir, "package.json"), "utf8"));
+    for (const name of ["typebox", "@sinclair/typebox", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+      assert.equal(manifest.dependencies?.[name], undefined, `${name} must come from the Pi host`);
+      assert.equal(manifest.peerDependencies?.[name], "*");
+    }
     writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "install-fixture", private: true, type: "module" }));
     npm(["install", join(fixture, packed.filename), "--legacy-peer-deps", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"]);
     // npm ls fails on incompatible Effect peers even with --legacy-peer-deps.
     npm(["ls", "effect", "@effect/platform-node", "@effect/platform-node-shared"]);
     const lock = JSON.parse(readFileSync(join(fixture, "package-lock.json"), "utf8"));
     assert.equal(Object.keys(lock.packages).some((path) => path.endsWith("/ioredis")), false);
+    assert.equal(Object.keys(lock.packages).some((path) => path.endsWith("/typebox")), false);
     assert.equal(Object.keys(lock.packages).some((path) => path.endsWith("/@earendil-works/pi-coding-agent")), false);
     // Node cannot strip TypeScript inside node_modules. Copy the two packed
     // runtime files beside it; bare imports still resolve the installed tree.
