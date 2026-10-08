@@ -286,6 +286,17 @@ Disables the bundled statusline module (model/ctx gauge, git segment, MCP status
 
 Statusline switches to a plain context style and drops the `wt <name>` worktree segment.
 
+## Working spinner
+
+While a request is running, the spinner appears above the editor in both regular and fullscreen modes:
+
+```text
+✻ Cultivating… (1m 31s · ↑ 4.6k tokens)
+  └ Tip: Press Shift+Enter to insert a new line
+```
+
+The verb and star follow the theme accent. The shortcut follows your editor keybindings. A `~` before the token count marks a streaming estimate (text, thinking, and tool arguments); finalized provider output usage replaces that estimate. Counts accumulate across tool turns within the same request.
+
 ## Theme
 
 The package ships the **`cc-my-pi-dark`** theme (Claude Code-style dark palette),

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Loader } from "@earendil-works/pi-tui";
+import { getKeybindings, Loader, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Patch built-in Loader with Claude/OpenBrawd-style glyphs.
@@ -15,7 +15,7 @@ const RESET = "\x1b[0m";
 // Defaults match the previous hardcoded values so behavior is identical
 // when no theme is available or themeAdaptive=false. `applyThemeColors`
 // below re-derives them from the active pi theme each tick.
-let CLAUDE_ORANGE = "\x1b[38;2;215;119;87m";
+let CLAUDE_ORANGE = "\x1b[38;2;217;119;87m";
 let STATUS_DIM = "\x1b[38;2;153;153;153m";
 let GLYPH_COLOR: string | null = null;
 
@@ -86,7 +86,7 @@ function spinnerModuleEnabled(): boolean {
 }
 
 // Original Claude-style values restored when the user turns adaptive off.
-const _DEFAULT_CLAUDE_ORANGE = "\x1b[38;2;215;119;87m";
+const _DEFAULT_CLAUDE_ORANGE = "\x1b[38;2;217;119;87m";
 const _DEFAULT_STATUS_DIM = "\x1b[38;2;153;153;153m";
 
 let _themeColorsCacheTheme: unknown = null;
@@ -530,7 +530,7 @@ function pickVerb(): string {
 }
 
 /** Format elapsed ms as compact duration: 5s, 1m 23s, 1h 2m 3s */
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
 	const totalSec = Math.floor(ms / 1000);
 	const h = Math.floor(totalSec / 3600);
 	const m = Math.floor((totalSec % 3600) / 60);
@@ -545,7 +545,7 @@ function formatCount(value: number): string {
 }
 
 /** Claude-style compact token counts: 18, 1.4k, 12k */
-function formatTokenCount(value: number): string {
+export function formatTokenCount(value: number): string {
 	const n = Math.max(0, Math.round(value));
 	if (n < 1000) return String(n);
 	const k = n / 1000;
@@ -556,10 +556,42 @@ function formatTokenCount(value: number): string {
 	return `${Math.round(k)}k`;
 }
 
+function responseBlockLength(block: any): number {
+	if (block?.type === "text") return typeof block.text === "string" ? block.text.length : 0;
+	if (block?.type === "thinking") return typeof block.thinking === "string" ? block.thinking.length : 0;
+	if (block?.type === "toolCall") return JSON.stringify(block.arguments ?? {}).length;
+	return 0;
+}
+
+/** Only finalized provider usage is authoritative; streaming counts are estimates. */
+export function outputTokens(message: any): number | undefined {
+	const value = message?.usage?.output;
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
+}
+
+export function renderWorkingLines(width: number, frame: string, message: string, tip: string): string[] {
+	if (width <= 0) return [];
+	const margin = " ".repeat(Math.min(1, width - 1));
+	const tipMargin = " ".repeat(Math.min(3, width - 1));
+	return [
+		...wrapTextWithAnsi(`${frame} ${message}`, width - margin.length).map((line) => `${margin}${line}`),
+		...wrapTextWithAnsi(`${STATUS_DIM}└ Tip: ${tip}${RESET}`, width - tipMargin.length).map((line) => `${tipMargin}${line}`),
+	];
+}
+
+function newlineTip(): string {
+	const key = getKeybindings().getKeys("tui.input.newLine")[0];
+	if (!key) return "Use the editor to compose your next message";
+	const display = key.split("+").map((part) => part[0].toUpperCase() + part.slice(1)).join("+");
+	return `Press ${display} to insert a new line`;
+}
+
+const WORKING_WIDGET_KEY = "cc-my-pi-spinner";
+
 function estimateResponseLength(message: any): number {
 	if (!Array.isArray(message?.content)) return 0;
 	return message.content.reduce((sum: number, block: any) =>
-		sum + (block?.type === "text" && typeof block.text === "string" ? block.text.length : 0), 0);
+		sum + responseBlockLength(block), 0);
 }
 
 function textBlockLengths(message: any): number[] {
@@ -567,9 +599,7 @@ function textBlockLengths(message: any): number[] {
 	const lengths: number[] = [];
 	for (let i = 0; i < message.content.length; i++) {
 		const block = message.content[i];
-		if (block?.type === "text" && typeof block.text === "string") {
-			lengths[i] = block.text.length;
-		}
+		lengths[i] = responseBlockLength(block);
 	}
 	return lengths;
 }
@@ -599,7 +629,15 @@ const TURN_COMPLETION_MS = 2_500;
 
 
 export default function (pi: ExtensionAPI) {
+	// Reloading the extension must dispose the previous instance's timers/widget.
+	const cleanupKey = Symbol.for("cc-my-pi:spinner-cleanup");
+	(globalThis as any)[cleanupKey]?.();
 	if (!spinnerModuleEnabled()) return;
+	(globalThis as any)[cleanupKey] = () => {
+		turnActive = false;
+		clearDisplay();
+		activeCtx = null;
+	};
 	let agentStartTime = 0;
 	let turnStartTime = 0;
 	let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -607,6 +645,13 @@ export default function (pi: ExtensionAPI) {
 	let thoughtStatusTimer: ReturnType<typeof setTimeout> | null = null;
 	let currentVerb = "";
 	let responseLength = 0;
+	let completedOutputTokens = 0;
+	let currentOutputTokens: number | undefined;
+	let hasEstimatedTokens = false;
+	let animationTimer: ReturnType<typeof setInterval> | null = null;
+	let currentTip = "";
+	let widgetInstalled = false;
+	let widgetUi: any = null;
 	let responseTextBlockLengths: number[] = [];
 	let thinkingStatus: "thinking" | number /* duration ms */ | null = null;
 	let thinkingStartTime = 0;
@@ -641,27 +686,53 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function tokenSummary(): string {
+		const current = currentOutputTokens ?? Math.max(0, Math.round(responseLength / 4));
+		const estimate = hasEstimatedTokens || (currentOutputTokens === undefined && current > 0);
+		return `↑ ${estimate ? "~" : ""}${formatTokenCount(completedOutputTokens + current)} tokens`;
+	}
+
 	function buildWorkingMessage(): string {
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
-		const tokenCount = Math.max(0, Math.round(responseLength / 4));
-		// Claude Code shape while tools/stream run:
-		//   Crafting… (esc to interrupt · ↓ 1.4k tokens · 1m 2s)
-		// No "thinking" chip — thinking chrome is suppressed elsewhere too.
-		const statusParts: string[] = ["esc to interrupt"];
+		return `${CLAUDE_ORANGE}${currentVerb}…${RESET}${statusText(` (${formatDuration(elapsed)} · ${tokenSummary()})`)}`;
+	}
 
-		if (tokenCount > 0) {
-			statusParts.push(`↓ ${formatTokenCount(tokenCount)} tokens`);
+	function stopAnimation(): void {
+		if (animationTimer) clearInterval(animationTimer);
+		animationTimer = null;
+	}
+
+	function installWorkingWidget(): void {
+		if (!activeCtx?.hasUI || widgetInstalled) return;
+		widgetInstalled = true;
+		activeCtx.ui.setWorkingVisible(false);
+		activeCtx.ui.setWidget(WORKING_WIDGET_KEY, (tui: any) => {
+			widgetUi = tui;
+			return {
+				render(width: number) {
+					const frame = OB_FRAMES[Math.floor(Date.now() / LOADER_INTERVAL_MS) % OB_FRAMES.length];
+					return renderWorkingLines(width, `${GLYPH_COLOR ?? CLAUDE_ORANGE}${frame}${RESET}`, lastWorkingMessage ?? buildWorkingMessage(), currentTip);
+				},
+				invalidate() {},
+			};
+		}, { placement: "aboveEditor" });
+		stopAnimation();
+		animationTimer = setInterval(() => {
+			if (turnActive && widgetUi && !widgetUi.stopped) widgetUi.requestRender();
+		}, LOADER_INTERVAL_MS);
+		unrefTimer(animationTimer);
+	}
+
+	function removeWorkingWidget(): void {
+		stopAnimation();
+		widgetUi = null;
+		if (activeCtx?.hasUI && widgetInstalled) {
+			try {
+				activeCtx.ui.setWidget(WORKING_WIDGET_KEY, undefined);
+				activeCtx.ui.setWorkingVisible(true);
+			} catch { /* previous context may have been disposed during reload */ }
 		}
-
-		if (elapsed >= SHOW_TIMER_AFTER_MS || tokenCount > 0) {
-			statusParts.push(formatDuration(elapsed));
-		}
-		const activity = activitySuffix();
-		if (activity) statusParts.unshift(activity);
-
-		let message = `${CLAUDE_ORANGE}${currentVerb}…${RESET}`;
-		message += statusText(` (${statusParts.join(" · ")})`);
-		return message;
+		widgetInstalled = false;
 	}
 
 	function setResponseTextBlockLength(index: number, length: number): void {
@@ -673,6 +744,7 @@ export default function (pi: ExtensionAPI) {
 	function resetResponseTracking(message?: any): void {
 		responseTextBlockLengths = message ? textBlockLengths(message) : [];
 		responseLength = message ? estimateResponseLength(message) : 0;
+		currentOutputTokens = message ? outputTokens(message) : undefined;
 	}
 
 	function syncWorkingMessage(force = false): void {
@@ -686,7 +758,8 @@ export default function (pi: ExtensionAPI) {
 		if (!force && nextMessage === lastWorkingMessage) return;
 		lastWorkingMessage = nextMessage;
 		try {
-			activeCtx.ui.setWorkingMessage(nextMessage);
+			installWorkingWidget();
+			widgetUi?.requestRender();
 		} catch { /* noop */ }
 	}
 
@@ -788,6 +861,9 @@ export default function (pi: ExtensionAPI) {
 		thinkingStatus = null;
 		thoughtForSetAt = 0;
 		resetResponseTracking();
+		completedOutputTokens = 0;
+		hasEstimatedTokens = false;
+		removeWorkingWidget();
 		restoreDefaultWorkingMessage();
 	}
 
@@ -807,14 +883,23 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async () => {
 		// Start once per top-level request. Steering/follow-up messages while the
 		// agent is active must not reset the timer.
-		if (!agentStartTime) agentStartTime = Date.now();
+		if (!agentStartTime) {
+			agentStartTime = Date.now();
+			completedOutputTokens = 0;
+			hasEstimatedTokens = false;
+		}
 	});
 
 	pi.on("agent_start", async () => {
-		if (!agentStartTime) agentStartTime = Date.now();
+		if (!agentStartTime) {
+			agentStartTime = Date.now();
+			completedOutputTokens = 0;
+			hasEstimatedTokens = false;
+		}
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		clearDisplay();
 		activeCtx = ctx;
 		startupProgress = true;
 		if (ctx.hasUI) {
@@ -838,6 +923,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
+		removeWorkingWidget();
 		activeTurnId++;
 		turnActive = true;
 		startupProgress = false;
@@ -846,6 +932,7 @@ export default function (pi: ExtensionAPI) {
 		turnStartTime = Date.now();
 		if (!agentStartTime) agentStartTime = turnStartTime;
 		currentVerb = pickVerb();
+		currentTip = newlineTip();
 		resetResponseTracking();
 		clearCompletionTimer();
 		if (typeof thinkingStatus !== "number" || Date.now() - thoughtForSetAt >= THOUGHT_DISPLAY_MS) {
@@ -868,10 +955,10 @@ export default function (pi: ExtensionAPI) {
 			resetResponseTracking();
 		} else if (evt.type === "text_start") {
 			setResponseTextBlockLength(evt.contentIndex, 0);
-		} else if (evt.type === "text_delta") {
+		} else if (evt.type === "text_delta" || evt.type === "thinking_delta" || evt.type === "toolcall_delta") {
 			const previous = responseTextBlockLengths[evt.contentIndex] ?? 0;
 			setResponseTextBlockLength(evt.contentIndex, previous + (typeof evt.delta === "string" ? evt.delta.length : 0));
-		} else if (evt.type === "text_end") {
+		} else if (evt.type === "text_end" || evt.type === "thinking_end") {
 			setResponseTextBlockLength(evt.contentIndex, typeof evt.content === "string" ? evt.content.length : 0);
 		} else if (evt.type === "done") {
 			resetResponseTracking(evt.message);
@@ -905,6 +992,17 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("message_end", async (event, ctx) => {
+		if (event.message.role !== "assistant") return;
+		activeCtx = ctx;
+		const actual = outputTokens(event.message);
+		const estimated = Math.max(0, Math.round(estimateResponseLength(event.message) / 4));
+		completedOutputTokens += actual ?? estimated;
+		if (actual === undefined && estimated > 0) hasEstimatedTokens = true;
+		resetResponseTracking();
+		if (turnActive) syncWorkingMessage(true);
+	});
+
 	pi.on("turn_end", async (_event, ctx) => {
 		turnActive = false;
 		activeCtx = ctx;
@@ -914,6 +1012,7 @@ export default function (pi: ExtensionAPI) {
 		const turnId = activeTurnId;
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
 		stopRefreshLoop();
+		removeWorkingWidget();
 		clearCompletionTimer();
 
 		if (typeof thinkingStatus === "number" && Date.now() - thoughtForSetAt >= THOUGHT_DISPLAY_MS) {
@@ -922,14 +1021,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (activeCtx?.hasUI) {
-			const message = `${STATUS_DIM}✻ Turn took ${formatDuration(elapsed)}${RESET}`;
+			const message = `${STATUS_DIM}✻ Worked for ${formatDuration(elapsed)} · ${tokenSummary()}${RESET}`;
 			lastWorkingMessage = message;
 			try {
-				activeCtx.ui.setWorkingMessage(message);
+				activeCtx.ui.setWorkingVisible(false);
+				activeCtx.ui.setWidget(WORKING_WIDGET_KEY, [message], { placement: "aboveEditor" });
+				widgetInstalled = true;
 			} catch { /* noop */ }
 			completionTimer = setTimeout(() => {
 				completionTimer = null;
 				if (activeTurnId !== turnId) return;
+				removeWorkingWidget();
 				restoreDefaultWorkingMessage();
 			}, TURN_COMPLETION_MS);
 			unrefTimer(completionTimer);

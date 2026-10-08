@@ -7,6 +7,8 @@
 
 ### Changed
 
+- **Two-line working spinner** — show an animated orange verb with elapsed time and output tokens above the editor, followed by a stable shortcut tip. Streaming token estimates include thinking and tool calls; finalized provider usage corrects them and accumulates across a request. Narrow terminals wrap both lines, and cancel/reload clears the widget and timers.
+
 - **Claude orange accent** — `cc-my-pi-dark` now uses `#D97757` for its main accent, highlighted borders, message labels, Markdown headings, links, and inline code.
 
 ### Fixed
