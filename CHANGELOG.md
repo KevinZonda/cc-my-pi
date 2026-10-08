@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Claude orange accent** — `cc-my-pi-dark` now uses `#D97757` for its main accent, highlighted borders, message labels, Markdown headings, links, and inline code.
+
 ### Fixed
 
 - **Pi startup after installation** — import only the Effect Node services used by the git statusline, avoiding an unused Redis peer dependency, and pin the shared Node platform package to the same Effect beta version. Add a clean packed-package installation check using Pi's `--legacy-peer-deps` mode.
